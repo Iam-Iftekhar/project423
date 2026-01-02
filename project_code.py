@@ -3,751 +3,575 @@ from OpenGL.GLU import *
 from OpenGL.GLUT import *
 import math
 import random
+import sys
 import time
 
-# ==================== GAME STATE VARIABLES ====================
-camera_pos = [0, 300, 500]
-player_pos = [0, 100, 0]
-oxygen = 100
-stamina = 100  # NEW: Stamina system
-score = 0
-game_over = False
-win = False
-difficulty = 1.0
-game_duration = 0
-animation_time = 0
-active_keys = set()
-cheat_mode = False
-camera_mode = "follow"
-light_on = True
-last_shark_attack_time = 0
-shark_attack_cooldown = 10
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
-# Power-up timers (NEW)
-speed_boost_timer = 0
-invincibility_timer = 0
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 900
+MOUSE_SENSITIVITY = 0.08
+MOVE_SPEED = 1.5
+SPRINT_MULTIPLIER = 2.5
+FOG_DENSITY = 0.005
 
-# Game objects
-treasures = []
-powerups = []  # NEW: Power-ups list
-sharks = []
-seaweeds = []
-bubbles = []
-corals = []
-jellyfishes = []
+TARGET_FPS = 75.0
+FRAME_TIME = 1.0 / TARGET_FPS
 
-# ==================== INITIALIZATION FUNCTIONS ====================
-def reset_game():
-    global camera_pos, player_pos, oxygen, stamina, score, game_over, win
-    global difficulty, game_duration, animation_time, cheat_mode, camera_mode, light_on
-    global treasures, powerups, sharks, seaweeds, bubbles, corals, jellyfishes
-    global last_shark_attack_time, speed_boost_timer, invincibility_timer
-    
-    camera_pos = [0, 300, 500]
-    player_pos = [0, 100, 0]
-    oxygen = 100
-    stamina = 100
-    score = 0
-    game_over = False
-    win = False
-    difficulty = 1.0
-    game_duration = 0
-    animation_time = 0
-    cheat_mode = False
-    camera_mode = "follow"
-    light_on = True
-    last_shark_attack_time = 0
-    speed_boost_timer = 0
-    invincibility_timer = 0
-    
-    treasures = generate_treasures(25)
-    powerups = generate_powerups(8)  # NEW: Generate power-ups
-    sharks = generate_sharks(3)
-    seaweeds = generate_seaweeds(30)
-    bubbles = []
-    corals = generate_corals(15)
-    jellyfishes = generate_jellyfishes(8)
+# =============================================================================
+# GAME STATE CLASS
+# =============================================================================
 
-def generate_treasures(count):
-    return [[random.randint(-450, 450),
-             random.randint(20, 180),
-             random.randint(-450, -50),
-             random.choice(['pearl', 'coin', 'chest']),
-             random.uniform(0, 360)] for _ in range(count)]
+class GameState:
+    PLAYING = 0
+    WON = 1
+    LOST = 2
 
-# NEW: Generate power-ups
-def generate_powerups(count):
-    powerups_list = []
-    for _ in range(count):
-        powerups_list.append([
-            random.randint(-450, 450),
-            random.randint(30, 180),
-            random.randint(-450, -50),
-            random.choice(['speed', 'invincibility', 'oxygen']),
-            random.uniform(0, 360)
-        ])
-    return powerups_list
+class Game:
+    def __init__(self):
+        self.reset(full=True)
 
-def generate_sharks(count):
-    return [[random.randint(-480, 480),
-             random.randint(30, 150),
-             random.randint(-480, 0),
-             random.uniform(0, 2*math.pi),
-             random.uniform(0.3, 0.8)] for _ in range(count)]
+    def reset(self, full=False):
+        # Game state
+        self.state = GameState.PLAYING
 
-def generate_seaweeds(count):
-    seaweeds_list = []
-    for _ in range(count):
-        seaweeds_list.append([
-            random.randint(-480, 480),
-            random.randint(50, 200),
-            random.randint(-480, -50),
-            random.uniform(0.5, 1.5),
-            random.uniform(10, 20)  # Pre-generated width
-        ])
-    return seaweeds_list
+        # Camera / Player
+        self.pos = [0, 10, 50]  # X, Y, Z
+        self.yaw = -90.0
+        self.pitch = 0.0
 
-def generate_corals(count):
-    return [[random.randint(-450, 450),
-             random.randint(0, 10),
-             random.randint(-450, -50),
-             random.uniform(0.5, 2.0),
-             random.choice(['red', 'orange', 'purple'])] for _ in range(count)]
+        # Stats
+        self.oxygen = 100.0
+        self.health = 100.0
+        self.score = 0
+        self.stamina = 100.0
 
-def generate_jellyfishes(count):
-    return [[random.randint(-450, 450),
-             random.randint(50, 200),
-             random.randint(-450, -50),
-             random.uniform(0.5, 1.5),
-             random.uniform(0, 360)] for _ in range(count)]
+        # Flags
+        self.sprinting = False
+        self.invincible = False
+        self.invincible_timer = 0.0
 
-# ==================== SHARK ATTACK SYSTEM ====================
-def trigger_shark_attack():
-    global sharks, player_pos
-    if not sharks or cheat_mode:
-        return
-    
-    attacking_shark = random.choice(sharks)
-    dx = player_pos[0] - attacking_shark[0]
-    dz = player_pos[2] - attacking_shark[2]
-    distance = math.sqrt(dx*dx + dz*dz)
-    
-    if distance > 200:
-        attacking_shark[3] = math.atan2(dz, dx)
-        attacking_shark[4] = 2.0
-        attacking_shark[1] = min(attacking_shark[1] + 20, 180)
+        # Timing
+        self.last_time = time.time()
 
-# ==================== RENDERING HELPERS ====================
-def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18, color=(1, 1, 1)):
-    glMatrixMode(GL_PROJECTION)
-    glPushMatrix()
-    glLoadIdentity()
-    gluOrtho2D(0, 1000, 0, 800)
-    glMatrixMode(GL_MODELVIEW)
-    glPushMatrix()
-    glLoadIdentity()
+        # Input State
+        self.keys = {}
+        self.modifiers = 0  # Stores state of Shift
+
+        # Mouse centering flags
+        self.ignore_next_mouse = False
+        self.center_x = int(WINDOW_WIDTH / 2)
+        self.center_y = int(WINDOW_HEIGHT / 2)
+
+        # Rendering
+        if full:
+            self.quadric = None
+
+        # Entities
+        self.sharks = []
+        self.treasures = []
+        self.bubbles = []
+        self.seaweeds = []
+        self.generate_world()
+
+    def generate_world(self):
+        # Tutorial Chest
+        self.treasures = []
+        self.treasures.append({'pos': [0, 5, -40], 'active': True, 'rot': 0})
+
+        # Random Chests
+        for _ in range(15):
+            self.treasures.append({
+                'pos': [random.uniform(-400, 400), 5, random.uniform(-400, 400)],
+                'active': True,
+                'rot': random.uniform(0, 360)
+            })
+
+        # Sharks
+        self.sharks = []
+        self.sharks.append({'pos': [60, 40, -60], 'yaw': 0, 'speed': 0.6, 'anim_offset': 0})
+        for _ in range(10):
+            self.sharks.append({
+                'pos': [random.uniform(-400, 400), random.uniform(10, 250), random.uniform(-400, 400)],
+                'yaw': random.uniform(0, 360),
+                'speed': random.uniform(0.5, 1.2),
+                'anim_offset': random.uniform(0, 10)
+            })
+
+        # Bubbles & Seaweed
+        self.bubbles = []
+        for _ in range(200):
+            self.bubbles.append({
+                'pos': [random.uniform(-500, 500), random.uniform(0, 400), random.uniform(-500, 500)],
+                'size': random.uniform(0.5, 2.0)
+            })
+
+        self.seaweeds = []
+        for _ in range(350):
+            self.seaweeds.append({
+                'pos': [random.uniform(-450, 450), random.uniform(-450, 450)],
+                'height': random.randint(4, 8),
+                'rot': random.uniform(0, 360),
+                'scale': random.uniform(0.8, 1.2)
+            })
+
+game = Game()
+
+# =============================================================================
+# HELPER MATH & DRAWING
+# =============================================================================
+
+def dist(p1, p2):
+    return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2 + (p1[2]-p2[2])**2)
+
+def draw_text_string(x, y, text, color=(1, 1, 1)):
     glColor3f(*color)
     glRasterPos2f(x, y)
-    for ch in text:
-        glutBitmapCharacter(font, ord(ch))
-    glPopMatrix()
-    glMatrixMode(GL_PROJECTION)
-    glPopMatrix()
-    glMatrixMode(GL_MODELVIEW)
+    for char in text:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(char))
 
-def calculate_lighting(x, y, z, color):
-    if not light_on:
-        return color
-    
-    light_color = [1.0, 1.0, 1.0]
-    ambient_intensity = 0.3
-    diffuse_intensity = 0.7
-    
-    light_dir = [light_pos[0] - x, light_pos[1] - y, light_pos[2] - z]
-    light_dist = math.sqrt(light_dir[0]**2 + light_dir[1]**2 + light_dir[2]**2)
-    
-    if light_dist > 0:
-        light_dir = [d/light_dist for d in light_dir]
-    else:
-        light_dir = [0, 1, 0]
-    
-    normal = [0, 1, 0]
-    
-    ambient = [ambient_intensity * color[i] for i in range(3)]
-    
-    dot = max(0, sum(normal[i]*light_dir[i] for i in range(3)))
-    diffuse = [diffuse_intensity * dot * color[i] * light_color[i] for i in range(3)]
-    
-    final_color = [min(1.0, ambient[i] + diffuse[i]) for i in range(3)]
-    return final_color
+def draw_cube():
+    glBegin(GL_QUADS)
+    glNormal3f(0, 0, 1)
+    glVertex3f(-0.5, -0.5, 0.5)
+    glVertex3f(0.5, -0.5, 0.5)
+    glVertex3f(0.5, 0.5, 0.5)
+    glVertex3f(-0.5, 0.5, 0.5)
 
-# ==================== DRAWING FUNCTIONS ====================
-def draw_seaweed(x, h, z, sway, base_width):
+    glNormal3f(0, 0, -1)
+    glVertex3f(-0.5, -0.5, -0.5)
+    glVertex3f(-0.5, 0.5, -0.5)
+    glVertex3f(0.5, 0.5, -0.5)
+    glVertex3f(0.5, -0.5, -0.5)
+
+    glNormal3f(-1, 0, 0)
+    glVertex3f(-0.5, -0.5, -0.5)
+    glVertex3f(-0.5, -0.5, 0.5)
+    glVertex3f(-0.5, 0.5, 0.5)
+    glVertex3f(-0.5, 0.5, -0.5)
+
+    glNormal3f(1, 0, 0)
+    glVertex3f(0.5, -0.5, -0.5)
+    glVertex3f(0.5, 0.5, -0.5)
+    glVertex3f(0.5, 0.5, 0.5)
+    glVertex3f(0.5, -0.5, 0.5)
+
+    glNormal3f(0, 1, 0)
+    glVertex3f(-0.5, 0.5, -0.5)
+    glVertex3f(-0.5, 0.5, 0.5)
+    glVertex3f(0.5, 0.5, 0.5)
+    glVertex3f(0.5, 0.5, -0.5)
+
+    glNormal3f(0, -1, 0)
+    glVertex3f(-0.5, -0.5, -0.5)
+    glVertex3f(0.5, -0.5, -0.5)
+    glVertex3f(0.5, -0.5, 0.5)
+    glVertex3f(-0.5, -0.5, 0.5)
+    glEnd()
+
+def draw_seaweed(x, z, height, rot, scale):
     glPushMatrix()
     glTranslatef(x, 0, z)
-    sway_amount = math.sin(animation_time * sway) * 15
-    
-    glBegin(GL_TRIANGLE_STRIP)
-    for i in range(0, int(h), 5):
-        width = base_width * (1 - i/h)
-        green = 0.3 + 0.4 * (i/h)
-        base_color = [0.1, green, 0.1]
-        lit_color = calculate_lighting(x, i, z, base_color)
-        glColor3f(*lit_color)
-        glVertex3f(-width + sway_amount*(i/h), i, 0)
-        glVertex3f(width + sway_amount*(i/h), i, 0)
-    glEnd()
+    glRotatef(rot, 0, 1, 0)
+    glScalef(scale, scale, scale)
+    glColor3f(0.1, 0.4, 0.1)
+    for i in range(height):
+        glPushMatrix()
+        glTranslatef(0, 0.5 + i, 0)
+        glRotatef(i * 15 + math.sin(time.time() + x) * 5, 0, 1, 0)
+        glScalef(0.3, 1.0, 0.3)
+        draw_cube()
+        glPopMatrix()
     glPopMatrix()
 
-def draw_treasure(x, y, z, t, rotation):
+def draw_shark(x, y, z, yaw, anim_time):
+    if game.quadric is None:
+        game.quadric = gluNewQuadric()
+
     glPushMatrix()
     glTranslatef(x, y, z)
-    glRotatef(rotation, 0, 1, 0)
-    
-    if t == 'pearl':
-        base_color = [0.95, 0.95, 0.99]
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glutSolidSphere(12, 16, 16)
-    elif t == 'coin':
-        base_color = [0.9, 0.8, 0.1]
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glRotatef(90, 1, 0, 0)
-        glutSolidCylinder(10, 2, 16, 4)
-    else:  # chest
-        base_color = [0.7, 0.5, 0.2]
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glScalef(1.5, 0.8, 1)
-        glutSolidCube(20)
-    glPopMatrix()
+    glRotatef(yaw, 0, 1, 0)
 
-# NEW: Draw power-ups
-def draw_powerup(x, y, z, powerup_type, rotation):
+    glColor3f(0.4, 0.5, 0.6)
     glPushMatrix()
-    glTranslatef(x, y + math.sin(animation_time * 2) * 5, z)
-    glRotatef(rotation, 0, 1, 0)
-    
-    if powerup_type == 'speed':
-        base_color = [0.1, 0.9, 1.0]  # Cyan
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glutSolidCone(8, 20, 16, 4)
-    elif powerup_type == 'invincibility':
-        base_color = [1.0, 0.8, 0.1]  # Gold
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glutSolidSphere(10, 16, 16)
-    else:  # oxygen
-        base_color = [0.2, 1.0, 0.2]  # Green
-        lit_color = calculate_lighting(x, y, z, base_color)
-        glColor3f(*lit_color)
-        glutSolidTorus(3, 10, 16, 16)
+    glScalef(1, 1, 2.5)
+    gluSphere(game.quadric, 6, 16, 16)
     glPopMatrix()
 
-def draw_shark(x, y, z, angle, speed):
+    tail_wag = math.sin(anim_time * 8) * 20
+    glPushMatrix()
+    glTranslatef(0, 0, -5)
+    glRotatef(tail_wag, 0, 1, 0)
+    glRotatef(180, 0, 1, 0)
+    gluCylinder(game.quadric, 3, 0, 8, 12, 1)
+    glPopMatrix()
+
+    glPushMatrix()
+    glTranslatef(0, 4, 1)
+    glScalef(0.5, 4, 2)
+    gluSphere(game.quadric, 2, 10, 10)
+    glPopMatrix()
+
+    glColor3f(0, 0, 0)
+    glPushMatrix()
+    glTranslatef(2.5, 1, 3)
+    gluSphere(game.quadric, 0.5, 8, 8)
+    glTranslatef(-5, 0, 0)
+    gluSphere(game.quadric, 0.5, 8, 8)
+    glPopMatrix()
+
+    glPopMatrix()
+
+def draw_chest(x, y, z, rot):
     glPushMatrix()
     glTranslatef(x, y, z)
-    glRotatef(angle * 180 / math.pi, 0, 1, 0)
-    
-    if speed > 1.5:
-        base_color = [0.8, 0.2, 0.2]
-    else:
-        base_color = [0.4, 0.4, 0.5]
-    
-    lit_color = calculate_lighting(x, y, z, base_color)
-    glColor3f(*lit_color)
-    
-    # Body
+    glRotatef(rot, 0, 1, 0)
+
+    glColor3f(0.8, 0.6, 0.1)
     glPushMatrix()
-    glScalef(2.5, 1.0, 1.0)
-    glutSolidSphere(15, 20, 20)
-    glPopMatrix()
-    
-    # Tail
-    glPushMatrix()
-    glTranslatef(-35, 0, 0)
-    glRotatef(math.sin(animation_time * 5) * 15, 0, 1, 0)
-    glScalef(0.5, 1.0, 1.5)
-    glutSolidCone(10, 20, 10, 2)
-    glPopMatrix()
-    
-    # Dorsal fin
-    glPushMatrix()
-    glTranslatef(0, 15, 0)
-    glRotatef(-90, 1, 0, 0)
-    glutSolidCone(5, 10, 8, 1)
-    glPopMatrix()
-    
-    # Pectoral fins
-    for side in [-1, 1]:
-        glPushMatrix()
-        glTranslatef(5, -5, 8 * side)
-        glRotatef(30 * side, 1, 0, 0)
-        glScalef(1.0, 0.3, 0.6)
-        glutSolidSphere(5, 10, 10)
-        glPopMatrix()
-    
+    glScalef(8, 4, 5)
+    draw_cube()
     glPopMatrix()
 
-def draw_coral(x, y, z, size, color_type):
+    glColor3f(0.9, 0.7, 0.2)
     glPushMatrix()
-    glTranslatef(x, y, z)
-    
-    if color_type == 'red':
-        base_color = [0.8, 0.2, 0.2]
-    elif color_type == 'orange':
-        base_color = [0.9, 0.5, 0.1]
-    else:
-        base_color = [0.6, 0.2, 0.6]
-    
-    lit_color = calculate_lighting(x, y, z, base_color)
-    glColor3f(*lit_color)
-    
-    glutSolidSphere(size * 5, 10, 10)
-    
-    for i in range(3):
-        glPushMatrix()
-        glRotatef(i * 120 + animation_time * 10, 0, 1, 0)
-        glRotatef(30, 1, 0, 0)
-        glutSolidCone(size * 2, size * 10, 8, 3)
-        glPopMatrix()
-    
+    glTranslatef(0, 2.5, 0)
+    glScalef(8.5, 1.5, 5.5)
+    draw_cube()
     glPopMatrix()
 
-def draw_jellyfish(x, y, z, size, rotation):
-    glPushMatrix()
-    glTranslatef(x, y + math.sin(animation_time * size) * 10, z)
-    glRotatef(rotation, 0, 1, 0)
-    
-    base_color = [0.8, 0.6, 0.9]
-    lit_color = calculate_lighting(x, y, z, base_color)
-    glColor4f(lit_color[0], lit_color[1], lit_color[2], 0.7)
-    glutSolidSphere(size * 8, 16, 16)
-    
-    glBegin(GL_LINES)
-    for i in range(8):
-        angle = i * 45
-        tx = math.cos(math.radians(angle)) * size * 5
-        tz = math.sin(math.radians(angle)) * size * 5
-        ty = -size * 15 - math.sin(animation_time * 2 + i) * size * 5
-        glVertex3f(tx, 0, tz)
-        glVertex3f(tx, ty, tz)
-    glEnd()
     glPopMatrix()
 
-def draw_player():
-    glPushMatrix()
-    glTranslatef(*player_pos)
-    
-    # Invincibility shield effect
-    if invincibility_timer > 0:
-        glPushMatrix()
-        glColor4f(1.0, 0.8, 0.0, 0.3)
-        glutSolidSphere(25, 20, 20)
-        glPopMatrix()
-    
-    # Body
-    base_color = [0.2, 0.8, 0.2]
-    lit_color = calculate_lighting(player_pos[0], player_pos[1], player_pos[2], base_color)
-    glColor3f(*lit_color)
-    glutSolidSphere(15, 20, 20)
-    
-    # Eyes
-    for side in [-1, 1]:
-        glPushMatrix()
-        glTranslatef(10, 5, 5 * side)
-        glColor3f(1, 1, 1)
-        glutSolidSphere(3, 10, 10)
-        glTranslatef(1, 0, 0)
-        glColor3f(0, 0, 0)
-        glutSolidSphere(1.5, 10, 10)
-        glPopMatrix()
-    
-    # Air tank
-    glPushMatrix()
-    glTranslatef(-10, 0, 0)
-    glRotatef(90, 0, 1, 0)
-    base_color = [0.3, 0.3, 0.3]
-    lit_color = calculate_lighting(player_pos[0]-10, player_pos[1], player_pos[2], base_color)
-    glColor3f(*lit_color)
-    gluCylinder(gluNewQuadric(), 5, 5, 20, 10, 2)
-    glPopMatrix()
-    
-    glPopMatrix()
+# =============================================================================
+# UPDATE LOGIC
+# =============================================================================
 
-def draw_bubble(x, y, z, size, speed):
-    glPushMatrix()
-    glTranslatef(x, y, z)
-    glColor4f(0.7, 0.8, 1.0, 0.5)
-    glutSolidSphere(size, 16, 16)
-    glPopMatrix()
-
-def draw_objects():
-    # Ocean floor
-    glBegin(GL_QUADS)
-    base_color = [0.3, 0.25, 0.2]
-    lit_color = calculate_lighting(0, 0, 0, base_color)
-    glColor3f(*lit_color)
-    glVertex3f(-500, 0, -500)
-    glVertex3f(500, 0, -500)
-    glVertex3f(500, 0, 500)
-    glVertex3f(-500, 0, 500)
-    glEnd()
-    
-    # Water surface
-    glEnable(GL_BLEND)
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glBegin(GL_QUADS)
-    glColor4f(0.0, 0.3, 0.6, 0.7)
-    glVertex3f(-1000, 300, -1000)
-    glVertex3f(1000, 300, -1000)
-    glVertex3f(1000, 300, 1000)
-    glVertex3f(-1000, 300, 1000)
-    glEnd()
-    glDisable(GL_BLEND)
-    
-    for coral in corals:
-        draw_coral(*coral)
-    for seaweed in seaweeds:
-        draw_seaweed(*seaweed)
-    for treasure in treasures:
-        draw_treasure(*treasure)
-    for powerup in powerups:
-        draw_powerup(*powerup)
-    for shark in sharks:
-        draw_shark(*shark)
-    for jellyfish in jellyfishes:
-        draw_jellyfish(*jellyfish)
-    for bubble in bubbles:
-        draw_bubble(*bubble)
-    
-    draw_player()
-
-# ==================== GAME LOGIC ====================
-def update_game():
-    global oxygen, stamina, score, game_over, win, difficulty, game_duration, animation_time
-    global camera_pos, player_pos, treasures, powerups, sharks, bubbles, jellyfishes
-    global last_shark_attack_time, speed_boost_timer, invincibility_timer
-    
+def update():
     current_time = time.time()
-    delta_time = current_time - last_time[0]
-    last_time[0] = current_time
-    
-    game_duration += delta_time
-    animation_time += delta_time
-    
-    if game_over or win:
+    dt = current_time - game.last_time
+    game.last_time = current_time
+
+    if dt > 0.1:
+        dt = 0.1
+
+    if dt < FRAME_TIME:
+        time.sleep(FRAME_TIME - dt)
+        current_time = time.time()
+        dt = current_time - game.last_time
+        game.last_time = current_time
+
+    if game.state != GameState.PLAYING:
+        glutPostRedisplay()
         return
-    
-    # Update power-up timers
-    if speed_boost_timer > 0:
-        speed_boost_timer -= delta_time
-    if invincibility_timer > 0:
-        invincibility_timer -= delta_time
-    
-    # Stamina regeneration
-    is_moving = any(key in active_keys for key in ['w', 'a', 's', 'd', ' ', 'c'])
-    if is_moving:
-        stamina = max(0, stamina - delta_time * 15)
+
+    yaw_rad = math.radians(game.yaw)
+    pitch_rad = math.radians(game.pitch)
+
+    front_x = math.cos(yaw_rad) * math.cos(pitch_rad)
+    front_y = math.sin(pitch_rad)
+    front_z = math.sin(yaw_rad) * math.cos(pitch_rad)
+
+    right_x = -math.sin(yaw_rad)
+    right_z = math.cos(yaw_rad)
+
+    is_shifting = (game.modifiers & GLUT_ACTIVE_SHIFT)
+
+    speed = MOVE_SPEED
+    if is_shifting and game.stamina > 0:
+        speed *= SPRINT_MULTIPLIER
+        game.stamina -= 30 * dt
+        game.oxygen -= 5 * dt
     else:
-        stamina = min(100, stamina + delta_time * 10)
-    
-    # Random shark attacks
-    if not cheat_mode:
-        if current_time - last_shark_attack_time > shark_attack_cooldown / difficulty:
-            if random.random() < 0.05 * difficulty:
-                trigger_shark_attack()
-                last_shark_attack_time = current_time
-    
-    # Update sharks
-    for shark in sharks:
-        speed = shark[4] * delta_time * 20 * difficulty
-        
-        if shark[4] > 0.8:
-            shark[4] = max(0.8, shark[4] - delta_time * 0.2)
-        
-        shark[0] += math.cos(shark[3]) * speed
-        shark[2] += math.sin(shark[3]) * speed
-        
-        if shark[4] <= 0.8:
-            shark[3] += random.uniform(-0.03, 0.03) * difficulty
-        
-        if abs(shark[0]) > 480 or abs(shark[2]) > 480:
-            shark[3] += math.pi/2 + random.uniform(-0.3, 0.3)
-    
-    # Update jellyfish
-    for jellyfish in jellyfishes:
-        jellyfish[4] = (jellyfish[4] + delta_time * 10) % 360
-    
-    # Generate bubbles
-    if random.random() < 0.03:
-        bubbles.append([
-            player_pos[0] + random.uniform(-50, 50),
-            player_pos[1] - 30,
-            player_pos[2] + random.uniform(-50, 50),
-            random.uniform(5, 15),
-            random.uniform(0.3, 1.0)
-        ])
-    
-    # Update bubbles
-    for bubble in bubbles[:]:
-        bubble[1] += bubble[4] * delta_time * 30
-        bubble[3] *= 1.005
-        if bubble[1] > 300 or bubble[3] > 30:
-            bubbles.remove(bubble)
-    
-    # Oxygen consumption (disabled in cheat mode)
-    if not cheat_mode:
-        move_penalty = 1.3 if is_moving else 1.0
-        oxygen -= delta_time * 5 * move_penalty * difficulty
-        if oxygen <= 0:
-            game_over = True
-    
-    # Treasure collection
-    px, py, pz = player_pos
-    for treasure in treasures[:]:
-        tx, ty, tz, tt, _ = treasure
-        dist = math.sqrt((px-tx)**2 + (py-ty)**2 + (pz-tz)**2)
-        if dist < 25:
-            treasures.remove(treasure)
-            if tt == 'pearl':
-                score += 10
-                oxygen = min(100, oxygen + 20)
-            elif tt == 'coin':
-                score += 15
-            elif tt == 'chest':
-                score += 30
-            difficulty = min(2.0, difficulty + 0.05)
-    
-    # Power-up collection (NEW)
-    for powerup in powerups[:]:
-        px_x, px_y, px_z, p_type, _ = powerup
-        dist = math.sqrt((px-px_x)**2 + (py-px_y)**2 + (pz-px_z)**2)
-        if dist < 25:
-            powerups.remove(powerup)
-            if p_type == 'speed':
-                speed_boost_timer = 5.0
-            elif p_type == 'invincibility':
-                invincibility_timer = 8.0
-            elif p_type == 'oxygen':
-                oxygen = min(100, oxygen + 30)
-    
-    # Win condition
-    if not treasures:
-        win = True
-    
-    # Shark collision (disabled in cheat mode or with invincibility)
-    if not cheat_mode and invincibility_timer <= 0:
-        for shark in sharks:
-            sx, sy, sz, _, speed = shark
-            dist = math.sqrt((px-sx)**2 + (py-sy)**2 + (pz-sz)**2)
-            if dist < 35:
-                damage = 15 if speed > 1.5 else 5
-                oxygen -= damage * delta_time
-                
-                # Push player away
-                if dist > 0:
-                    push_dir = [(px - sx)/dist, (py - sy)/dist, (pz - sz)/dist]
-                    player_pos[0] += push_dir[0] * 20 * delta_time
-                    player_pos[1] += push_dir[1] * 20 * delta_time
-                    player_pos[2] += push_dir[2] * 20 * delta_time
-                
-                if oxygen <= 0:
-                    game_over = True
-    
-    # Update camera
-    if camera_mode == "follow":
-        camera_pos[0] += (player_pos[0] - camera_pos[0]) * 0.1
-        camera_pos[1] += (player_pos[1] + 200 - camera_pos[1]) * 0.1
-        camera_pos[2] += (player_pos[2] + 300 - camera_pos[2]) * 0.1
+        if game.stamina < 100:
+            game.stamina += 10 * dt
 
-def update_movement():
-    global stamina
-    if game_over or win:
-        return
-    
-    # Base speed affected by stamina and speed boost
-    base_speed = 40.0 * (1.0 / 60.0)
-    
-    # Stamina affects speed
-    stamina_multiplier = 0.5 if stamina < 10 else 1.0
-    
-    # Speed boost multiplier
-    speed_multiplier = 2.0 if speed_boost_timer > 0 else 1.0
-    
-    move_speed = base_speed * stamina_multiplier * speed_multiplier
-    
-    px, py, pz = player_pos
-    
-    if 'w' in active_keys: pz -= move_speed
-    if 's' in active_keys: pz += move_speed
-    if 'a' in active_keys: px -= move_speed
-    if 'd' in active_keys: px += move_speed
-    if ' ' in active_keys: py += move_speed
-    if 'c' in active_keys: py -= move_speed
-    
-    # Boundary checks
-    px = max(-450, min(450, px))
-    py = max(20, min(280, py))
-    pz = max(-450, min(50, pz))
-    
-    player_pos[0], player_pos[1], player_pos[2] = px, py, pz
-    
-    # Rotate treasures and power-ups
-    for treasure in treasures:
-        treasure[4] = (treasure[4] + 0.5) % 360
-    for powerup in powerups:
-        powerup[4] = (powerup[4] + 1.0) % 360
+    speed *= dt * 60
 
-# ==================== INPUT HANDLERS ====================
-def keyboardListener(key, x, y):
-    key = key.decode('utf-8').lower()
-    if key == 'r' and (game_over or win):
-        reset_game()
-    elif key in ['w', 'a', 's', 'd', ' ', 'c']:
-        active_keys.add(key)
-    elif key == 'v':
-        global cheat_mode
-        cheat_mode = not cheat_mode
-    elif key == 'l':
-        global light_on
-        light_on = not light_on
+    if game.keys.get(b'w'):
+        game.pos[0] += front_x * speed
+        game.pos[1] += front_y * speed
+        game.pos[2] += front_z * speed
 
-def keyboardUpListener(key, x, y):
-    key = key.decode('utf-8').lower()
-    if key in active_keys:
-        active_keys.remove(key)
+    if game.keys.get(b's'):
+        game.pos[0] -= front_x * speed
+        game.pos[1] -= front_y * speed
+        game.pos[2] -= front_z * speed
 
-def specialKeyListener(key, x, y):
-    global camera_pos, camera_mode
-    if camera_mode == "free":
-        if key == GLUT_KEY_UP: camera_pos[1] += 10
-        elif key == GLUT_KEY_DOWN: camera_pos[1] -= 10
-        elif key == GLUT_KEY_LEFT: camera_pos[0] -= 10
-        elif key == GLUT_KEY_RIGHT: camera_pos[0] += 10
+    if game.keys.get(b'a'):
+        game.pos[0] -= right_x * speed
+        game.pos[2] -= right_z * speed
 
-def mouseListener(button, state, x, y):
-    global camera_mode
-    if button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
-        camera_mode = "free" if camera_mode == "follow" else "follow"
+    if game.keys.get(b'd'):
+        game.pos[0] += right_x * speed
+        game.pos[2] += right_z * speed
 
-# ==================== RENDERING ====================
-def setupCamera():
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    gluPerspective(45, 1.25, 0.1, 1000.0)
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
-    px, py, pz = player_pos
-    gluLookAt(camera_pos[0], camera_pos[1], camera_pos[2],
-              px, py, pz,
-              0, 1, 0)
+    # Up = Space, Down = 'c'
+    if game.keys.get(b' '):
+        game.pos[1] += speed
+    if game.keys.get(b'c'):
+        game.pos[1] -= speed
 
-def showScreen():
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glLoadIdentity()
-    glViewport(0, 0, 1000, 800)
-    
-    # Fog effect
-    if not cheat_mode:
-        glEnable(GL_FOG)
-        glFogi(GL_FOG_MODE, GL_LINEAR)
-        glFogfv(GL_FOG_COLOR, [0.0, 0.1, 0.2, 1.0])
-        glFogf(GL_FOG_START, 100.0)
-        glFogf(GL_FOG_END, 400.0)
-    else:
-        glDisable(GL_FOG)
-    
-    setupCamera()
-    
-    # Ocean background
-    glBegin(GL_QUADS)
-    glColor3f(0.0, 0.1, 0.3)
-    glVertex3f(-1000, 0, -1000)
-    glVertex3f(1000, 0, -1000)
-    glColor3f(0.0, 0.3, 0.6)
-    glVertex3f(1000, 1000, -1000)
-    glVertex3f(-1000, 1000, -1000)
-    glEnd()
-    
-    draw_objects()
-    
-    # UI Display
-    if game_over:
-        draw_text(300, 400, "GAME OVER! Press R to restart", GLUT_BITMAP_TIMES_ROMAN_24, (1, 0.2, 0.2))
-        draw_text(350, 360, f"Final Score: {score}", GLUT_BITMAP_HELVETICA_18)
-        draw_text(350, 330, f"Time: {int(game_duration)} seconds", GLUT_BITMAP_HELVETICA_18)
-    elif win:
-        draw_text(320, 400, "YOU WIN! Press R to play again", GLUT_BITMAP_TIMES_ROMAN_24, (0.2, 1, 0.2))
-        draw_text(380, 360, f"Score: {score}", GLUT_BITMAP_HELVETICA_18)
-        draw_text(350, 330, f"Time: {int(game_duration)} seconds", GLUT_BITMAP_HELVETICA_18)
-    else:
-        # Check if shark attacking
-        is_attacking = any(shark[4] > 1.5 for shark in sharks)
-        
-        # Oxygen bar
-        oxygen_color = (0.2, 0.8, 0.2) if oxygen > 50 else (0.8, 0.8, 0.2) if oxygen > 20 else (0.8, 0.2, 0.2)
-        draw_text(20, 750, f"Oxygen: {int(oxygen)}%", GLUT_BITMAP_HELVETICA_18, oxygen_color)
-        
-        # Stamina bar (NEW)
-        stamina_color = (0.3, 0.6, 1.0) if stamina > 30 else (1.0, 0.5, 0.0)
-        draw_text(20, 720, f"Stamina: {int(stamina)}%", GLUT_BITMAP_HELVETICA_18, stamina_color)
-        
-        draw_text(20, 690, f"Score: {score}", GLUT_BITMAP_HELVETICA_18)
-        draw_text(650, 750, f"Treasures: {len(treasures)}", GLUT_BITMAP_HELVETICA_18, (1, 1, 0.5))
-        draw_text(650, 720, f"Power-ups: {len(powerups)}", GLUT_BITMAP_HELVETICA_18, (0.5, 1, 1))
-        draw_text(650, 690, f"Time: {int(game_duration)}", GLUT_BITMAP_HELVETICA_18)
-        
-        # Active effects
-        if speed_boost_timer > 0:
-            draw_text(350, 750, f"SPEED BOOST: {int(speed_boost_timer)}s", GLUT_BITMAP_HELVETICA_18, (0, 1, 1))
-        if invincibility_timer > 0:
-            draw_text(350, 720, f"INVINCIBLE: {int(invincibility_timer)}s", GLUT_BITMAP_HELVETICA_18, (1, 0.8, 0))
-        
-        if is_attacking:
-            draw_text(400, 650, "SHARK ATTACK!", GLUT_BITMAP_TIMES_ROMAN_24, (1, 0, 0))
-        
-        if cheat_mode:
-            draw_text(20, 660, "CHEAT MODE ACTIVE", GLUT_BITMAP_HELVETICA_18, (1, 0, 0))
-        
-        if stamina < 10:
-            draw_text(350, 690, "LOW STAMINA - SLOW MOVEMENT!", GLUT_BITMAP_HELVETICA_18, (1, 0.5, 0))
-        
-        draw_text(20, 30, "Controls: WASD=Move | Space=Up | C=Down | V=Cheat | L=Light | R=Restart",
-                  GLUT_BITMAP_9_BY_15, (0.8, 0.8, 0.8))
-    
-    glutSwapBuffers()
+    game.pos[1] = max(6, min(game.pos[1], 500))
 
-def idle():
-    update_movement()
-    update_game()
+    game.oxygen -= 1.5 * dt
+    if game.oxygen <= 0:
+        game.oxygen = 0
+        game.state = GameState.LOST
+
+    for s in game.sharks:
+        dist_to_player = dist(game.pos, s['pos'])
+        if dist_to_player < 250:
+            dx, dz = game.pos[0] - s['pos'][0], game.pos[2] - s['pos'][2]
+            s['yaw'] = math.degrees(math.atan2(dx, dz))
+            if abs(game.pos[1] - s['pos'][1]) > 2:
+                s['pos'][1] += math.copysign(s['speed'] * 0.6, game.pos[1] - s['pos'][1])
+            s_rad = math.radians(s['yaw'])
+            s['pos'][0] += math.sin(s_rad) * s['speed']
+            s['pos'][2] += math.cos(s_rad) * s['speed']
+
+        if dist_to_player < 18 and not game.invincible:
+            game.health -= 25
+            game.invincible = True
+            game.invincible_timer = 2.0
+            s_rad = math.radians(s['yaw'])
+            game.pos[0] += math.sin(s_rad) * 25
+            game.pos[2] += math.cos(s_rad) * 25
+            if game.health <= 0:
+                game.state = GameState.LOST
+
+    active_count = 0
+    for t in game.treasures:
+        if t['active']:
+            active_count += 1
+            if dist(game.pos, t['pos']) < 22:
+                t['active'] = False
+                game.score += 100
+                game.oxygen = min(100, game.oxygen + 30)
+
+    if active_count == 0 and game.state == GameState.PLAYING:
+        game.state = GameState.WON
+
+    if game.invincible:
+        game.invincible_timer -= dt
+        if game.invincible_timer <= 0:
+            game.invincible = False
+
     glutPostRedisplay()
 
-# ==================== MAIN ====================
-light_pos = [0, 300, 0]
-last_time = [time.time()]
+# =============================================================================
+# RENDERING
+# =============================================================================
+
+def draw_hud():
+    glDisable(GL_LIGHTING)
+    glDisable(GL_DEPTH_TEST)
+
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
+
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+
+    def draw_bar(x, y, w, h, val, max_val, color, label):
+        draw_text_string(x, y + h + 5, label, (1, 1, 1))
+        glColor3f(0.2, 0.2, 0.2)
+        glRectf(x, y, x + w, y + h)
+        glColor3f(*color)
+        glRectf(x, y, x + (val / max_val) * w, y + h)
+
+    if game.state == GameState.PLAYING:
+        glColor3f(1, 1, 1)
+        cx, cy = WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2
+        glRectf(cx - 2, cy - 10, cx + 2, cy + 10)
+        glRectf(cx - 10, cy - 2, cx + 10, cy + 2)
+
+        draw_bar(20, 100, 200, 20, game.oxygen, 100, (0, 1, 1), "OXYGEN")
+        draw_bar(20, 60, 200, 20, game.health, 100, (1, 0, 0), "HEALTH")
+        draw_bar(20, 25, 200, 10, game.stamina, 100, (1, 1, 0), "STAMINA")
+
+        draw_text_string(WINDOW_WIDTH - 150, WINDOW_HEIGHT - 40, f"SCORE: {game.score}", (1, 1, 0))
+
+    elif game.state == GameState.WON:
+        draw_text_string(WINDOW_WIDTH / 2 - 80, WINDOW_HEIGHT / 2 + 20, "MISSION COMPLETE!", (0, 1, 0))
+        draw_text_string(WINDOW_WIDTH / 2 - 70, WINDOW_HEIGHT / 2 - 10, f"FINAL SCORE: {game.score}", (1, 1, 1))
+        draw_text_string(WINDOW_WIDTH / 2 - 90, WINDOW_HEIGHT / 2 - 40, "Press R to Restart or ESC to Quit", (1, 1, 1))
+
+    elif game.state == GameState.LOST:
+        draw_text_string(WINDOW_WIDTH / 2 - 80, WINDOW_HEIGHT / 2 + 20, "OXYGEN DEPLETED", (1, 0, 0))
+        draw_text_string(WINDOW_WIDTH / 2 - 70, WINDOW_HEIGHT / 2 - 10, f"FINAL SCORE: {game.score}", (1, 1, 1))
+        draw_text_string(WINDOW_WIDTH / 2 - 90, WINDOW_HEIGHT / 2 - 40, "Press R to Restart or ESC to Quit", (1, 1, 1))
+
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    glEnable(GL_DEPTH_TEST)
+
+def display():
+    if game.quadric is None:
+        game.quadric = gluNewQuadric()
+
+    glClearColor(0.05, 0.10, 0.25, 1.0)
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(60, WINDOW_WIDTH / WINDOW_HEIGHT, 0.1, 1000.0)
+
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+
+    yaw_rad = math.radians(game.yaw)
+    pitch_rad = math.radians(game.pitch)
+
+    look_x = game.pos[0] + math.cos(yaw_rad) * math.cos(pitch_rad)
+    look_y = game.pos[1] + math.sin(pitch_rad)
+    look_z = game.pos[2] + math.sin(yaw_rad) * math.cos(pitch_rad)
+
+    gluLookAt(
+        game.pos[0], game.pos[1], game.pos[2],
+        look_x, look_y, look_z,
+        0, 1, 0
+    )
+
+    glEnable(GL_LIGHTING)
+    glEnable(GL_COLOR_MATERIAL)
+
+    glEnable(GL_LIGHT0)
+    glLightfv(GL_LIGHT0, GL_AMBIENT, [0.1, 0.1, 0.2, 1.0])
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.2, 0.2, 0.3, 1.0])
+
+    glEnable(GL_LIGHT1)
+    glLightfv(GL_LIGHT1, GL_POSITION, [game.pos[0], game.pos[1], game.pos[2], 1.0])
+    dir_x = look_x - game.pos[0]
+    dir_y = look_y - game.pos[1]
+    dir_z = look_z - game.pos[2]
+    glLightfv(GL_LIGHT1, GL_SPOT_DIRECTION, [dir_x, dir_y, dir_z])
+    glLightf(GL_LIGHT1, GL_SPOT_CUTOFF, 50.0)
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, [1.0, 1.0, 0.9, 1.0])
+
+    glEnable(GL_FOG)
+    glFogfv(GL_FOG_COLOR, [0.06, 0.12, 0.30, 1.0])
+    glFogf(GL_FOG_DENSITY, FOG_DENSITY)
+
+    glBegin(GL_QUADS)
+    glNormal3f(0, 1, 0)
+    s = 600
+    for x in range(-s, s, 100):
+        for z in range(-s, s, 100):
+            if (x * z) % 3 == 0:
+                glColor3f(0.65, 0.55, 0.35)
+            else:
+                glColor3f(0.7, 0.6, 0.4)
+            glVertex3f(x, 0, z)
+            glVertex3f(x + 100, 0, z)
+            glVertex3f(x + 100, 0, z + 100)
+            glVertex3f(x, 0, z + 100)
+    glEnd()
+
+    for sw in game.seaweeds:
+        draw_seaweed(sw['pos'][0], sw['pos'][1], sw['height'], sw['rot'], sw['scale'])
+
+    for t in game.treasures:
+        if t['active']:
+            bob = math.sin(time.time() * 2) * 1.5
+            draw_chest(t['pos'][0], t['pos'][1] + bob, t['pos'][2], t['rot'])
+
+    for s in game.sharks:
+        draw_shark(s['pos'][0], s['pos'][1], s['pos'][2], s['yaw'], time.time() + s['anim_offset'])
+
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+    glColor4f(0.7, 0.8, 1.0, 0.3)
+    for b in game.bubbles:
+        glPushMatrix()
+        rise = (time.time() * 10) % 400
+        curr_y = (b['pos'][1] + rise) % 400
+        glTranslatef(b['pos'][0], curr_y, b['pos'][2])
+        gluSphere(game.quadric, b['size'], 8, 8)
+        glPopMatrix()
+    glDisable(GL_BLEND)
+
+    draw_hud()
+    glutSwapBuffers()
+
+# =============================================================================
+# INPUT
+# =============================================================================
+
+def _safe_quit():
+    try:
+        glutLeaveMainLoop()
+    except Exception:
+        sys.exit(0)
+
+def keyboard_down(key, x, y):
+    if key == b'\x1b':
+        _safe_quit()
+        return
+
+    if key in (b'r', b'R'):
+        game.reset(full=False)
+        return
+
+    game.keys[key] = True
+    game.modifiers = glutGetModifiers()
+
+def keyboard_up(key, x, y):
+    game.keys[key] = False
+    game.modifiers = glutGetModifiers()
+
+def mouse_motion(x, y):
+    game.modifiers = glutGetModifiers()
+
+    if game.ignore_next_mouse:
+        game.ignore_next_mouse = False
+        return
+
+    if game.state != GameState.PLAYING:
+        return
+
+    cx, cy = game.center_x, game.center_y
+    dx = x - cx
+    dy = cy - y
+
+    game.yaw += dx * MOUSE_SENSITIVITY
+    game.pitch += dy * MOUSE_SENSITIVITY
+
+    if game.pitch > 89.0:
+        game.pitch = 89.0
+    if game.pitch < -89.0:
+        game.pitch = -89.0
+
+    if dx != 0 or dy != 0:
+        game.ignore_next_mouse = True
+        glutWarpPointer(cx, cy)
+
+# =============================================================================
+# MAIN
+# =============================================================================
 
 def main():
-    glutInit()
+    glutInit(sys.argv)
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
-    glutInitWindowSize(1000, 800)
-    glutInitWindowPosition(0, 0)
+    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutCreateWindow(b"Abyssal Dive: Oxygen Rush")
-    
-    glClearColor(0.0, 0.1, 0.2, 1.0)
-    glEnable(GL_DEPTH_TEST)  # FIXED: Added depth test
-    
-    reset_game()
-    
-    glutDisplayFunc(showScreen)
-    glutKeyboardFunc(keyboardListener)
-    glutKeyboardUpFunc(keyboardUpListener)
-    glutSpecialFunc(specialKeyListener)
-    glutMouseFunc(mouseListener)
-    glutIdleFunc(idle)
-    
+
+    glEnable(GL_DEPTH_TEST)
+    glutSetCursor(GLUT_CURSOR_NONE)
+
+    glutDisplayFunc(display)
+    glutIdleFunc(update)
+    glutKeyboardFunc(keyboard_down)
+    glutKeyboardUpFunc(keyboard_up)
+    glutPassiveMotionFunc(mouse_motion)
+    glutWarpPointer(int(WINDOW_WIDTH / 2), int(WINDOW_HEIGHT / 2))
+
     glutMainLoop()
 
 if __name__ == "__main__":
