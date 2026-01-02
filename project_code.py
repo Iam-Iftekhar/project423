@@ -14,7 +14,7 @@ WINDOW_HEIGHT = 900
 MOUSE_SENSITIVITY = 0.1
 MOVE_SPEED = 1.5
 SPRINT_MULTIPLIER = 2.5
-FOG_DENSITY = 0.005
+# FOG_DENSITY = 0.005 # Not used anymore
 
 # =============================================================================
 # GAME STATE CLASS
@@ -139,6 +139,7 @@ def draw_text_string(x, y, text, color=(1, 1, 1)):
 
 def draw_cube():
     glBegin(GL_QUADS)
+    # Normals are technically not needed without lighting, but good practice to keep
     glNormal3f(0, 0, 1); glVertex3f(-0.5, -0.5, 0.5); glVertex3f(0.5, -0.5, 0.5); glVertex3f(0.5, 0.5, 0.5); glVertex3f(-0.5, 0.5, 0.5)
     glNormal3f(0, 0, -1); glVertex3f(-0.5, -0.5, -0.5); glVertex3f(-0.5, 0.5, -0.5); glVertex3f(0.5, 0.5, -0.5); glVertex3f(0.5, -0.5, -0.5)
     glNormal3f(-1, 0, 0); glVertex3f(-0.5, -0.5, -0.5); glVertex3f(-0.5, -0.5, 0.5); glVertex3f(-0.5, 0.5, 0.5); glVertex3f(-0.5, 0.5, -0.5)
@@ -285,14 +286,12 @@ def update():
         game.state = GameState.LOST
 
     # --- MEDKIT SPAWN/DESPAWN LOGIC ---
-    # 1. Spawn if health < 50% and haven't spawned for this drop event yet
     if game.health < 50.0 and not game.medkits_spawned_for_low_health:
         game.spawn_medkits()
         game.medkits_spawned_for_low_health = True
     
-    # 2. Despawn if health recovers to 100%
     if game.health >= 100.0 and game.medkits_spawned_for_low_health:
-        game.medkits = [] # Clear medkits
+        game.medkits = [] 
         game.medkits_spawned_for_low_health = False
 
     # --- ENTITIES ---
@@ -393,7 +392,8 @@ def draw_hud():
 
 def display():
     if game.quadric is None: game.quadric = gluNewQuadric()
-    glClearColor(0.02, 0.05, 0.1, 1.0) 
+    # UPDATED BACKGROUND COLOR FOR CLEAR WATER
+    glClearColor(0.0, 0.4, 0.7, 1.0) 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     
     glMatrixMode(GL_PROJECTION); glLoadIdentity()
@@ -408,15 +408,15 @@ def display():
     look_z = game.pos[2] + math.sin(yaw_rad) * math.cos(pitch_rad)
     gluLookAt(game.pos[0], game.pos[1], game.pos[2], look_x, look_y, look_z, 0, 1, 0)
 
-    glEnable(GL_LIGHTING); glEnable(GL_COLOR_MATERIAL)
-    glEnable(GL_LIGHT0); glLightfv(GL_LIGHT0, GL_AMBIENT, [0.1, 0.1, 0.2, 1.0]); glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.2, 0.2, 0.3, 1.0])
-    
-    glEnable(GL_LIGHT1); glLightfv(GL_LIGHT1, GL_POSITION, [game.pos[0], game.pos[1], game.pos[2], 1.0])
-    dir_x = look_x - game.pos[0]; dir_y = look_y - game.pos[1]; dir_z = look_z - game.pos[2]
-    glLightfv(GL_LIGHT1, GL_SPOT_DIRECTION, [dir_x, dir_y, dir_z])
-    glLightf(GL_LIGHT1, GL_SPOT_CUTOFF, 50.0); glLightfv(GL_LIGHT1, GL_DIFFUSE, [1.0, 1.0, 0.9, 1.0])
-    
-    glEnable(GL_FOG); glFogfv(GL_FOG_COLOR, [0.02, 0.05, 0.1, 1.0]); glFogf(GL_FOG_DENSITY, FOG_DENSITY)
+    # --- LIGHTING AND FOG DISABLED FOR "NATURAL" LOOK ---
+    # glEnable(GL_LIGHTING); glEnable(GL_COLOR_MATERIAL)
+    # glEnable(GL_LIGHT0); glLightfv(GL_LIGHT0, GL_AMBIENT, [0.1, 0.1, 0.2, 1.0]); glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.2, 0.2, 0.3, 1.0])
+    # glEnable(GL_LIGHT1); glLightfv(GL_LIGHT1, GL_POSITION, [game.pos[0], game.pos[1], game.pos[2], 1.0])
+    # dir_x = look_x - game.pos[0]; dir_y = look_y - game.pos[1]; dir_z = look_z - game.pos[2]
+    # glLightfv(GL_LIGHT1, GL_SPOT_DIRECTION, [dir_x, dir_y, dir_z])
+    # glLightf(GL_LIGHT1, GL_SPOT_CUTOFF, 50.0); glLightfv(GL_LIGHT1, GL_DIFFUSE, [1.0, 1.0, 0.9, 1.0])
+    # glEnable(GL_FOG); glFogfv(GL_FOG_COLOR, [0.02, 0.05, 0.1, 1.0]); glFogf(GL_FOG_DENSITY, FOG_DENSITY)
+    # ----------------------------------------------------
 
     # Floor
     glColor3f(0.7, 0.6, 0.4); glBegin(GL_QUADS); glNormal3f(0, 1, 0)
@@ -441,8 +441,9 @@ def display():
 
     for s in game.sharks: draw_shark(s['pos'][0], s['pos'][1], s['pos'][2], s['yaw'], time.time() + s['anim_offset'])
         
+    # Bubbles (Simplified rendering without lighting)
+    glColor4f(0.8, 0.9, 1.0, 0.5) # Brighter, semi-transparent
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glColor4f(0.7, 0.8, 1.0, 0.3)
     for b in game.bubbles:
         glPushMatrix()
         rise = (time.time() * 10) % 400
@@ -495,7 +496,8 @@ def mouse_motion(x, y):
 # =============================================================================
 def main():
     glutInit(sys.argv)
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    # Using RGBA for better transparency handling
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH)
     glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutCreateWindow(b"Abyssal Dive: Oxygen Rush")
     
