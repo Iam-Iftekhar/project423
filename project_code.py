@@ -14,7 +14,6 @@ WINDOW_HEIGHT = 900
 MOUSE_SENSITIVITY = 0.1
 MOVE_SPEED = 1.5
 SPRINT_MULTIPLIER = 2.5
-# FOG_DENSITY = 0.005 # Not used anymore
 
 # =============================================================================
 # GAME STATE CLASS
@@ -57,6 +56,10 @@ class Game:
         self.invincible = False
         self.invincible_timer = 0
         self.last_time = time.time()
+        
+        # Cheat Mode Flags
+        self.cheat_mode = False
+        self.cheat_timer = 0.0
         
         # Medkit Logic Flags
         self.medkits_spawned_for_low_health = False
@@ -139,7 +142,6 @@ def draw_text_string(x, y, text, color=(1, 1, 1)):
 
 def draw_cube():
     glBegin(GL_QUADS)
-    # Normals are technically not needed without lighting, but good practice to keep
     glNormal3f(0, 0, 1); glVertex3f(-0.5, -0.5, 0.5); glVertex3f(0.5, -0.5, 0.5); glVertex3f(0.5, 0.5, 0.5); glVertex3f(-0.5, 0.5, 0.5)
     glNormal3f(0, 0, -1); glVertex3f(-0.5, -0.5, -0.5); glVertex3f(-0.5, 0.5, -0.5); glVertex3f(0.5, 0.5, -0.5); glVertex3f(0.5, -0.5, -0.5)
     glNormal3f(-1, 0, 0); glVertex3f(-0.5, -0.5, -0.5); glVertex3f(-0.5, -0.5, 0.5); glVertex3f(-0.5, 0.5, 0.5); glVertex3f(-0.5, 0.5, -0.5)
@@ -231,6 +233,13 @@ def update():
 
     if game.state != GameState.PLAYING: return
 
+    # --- CHEAT MODE TIMER ---
+    if game.cheat_mode:
+        game.cheat_timer -= dt
+        if game.cheat_timer <= 0:
+            game.cheat_mode = False
+            game.cheat_timer = 0
+
     # --- MOVEMENT MATH ---
     yaw_rad = math.radians(game.yaw)
     pitch_rad = math.radians(game.pitch)
@@ -306,7 +315,8 @@ def update():
         s['pos'][0] += math.sin(s_rad) * s['speed']
         s['pos'][2] += math.cos(s_rad) * s['speed']
 
-        if dist_to_player < 18 and not game.invincible: 
+        # COLLISION: Added check 'and not game.cheat_mode'
+        if dist_to_player < 18 and not game.invincible and not game.cheat_mode: 
             game.health -= 25
             game.invincible = True
             game.invincible_timer = 2.0
@@ -369,6 +379,11 @@ def draw_hud():
         draw_bar(20, 60, 200, 20, game.health, 100, (1, 0, 0), "HEALTH") 
         draw_bar(20, 25, 200, 10, game.stamina, 100, (1, 1, 0), "STAMINA") 
         
+        # CHEAT MODE INDICATOR
+        if game.cheat_mode:
+             glColor3f(0, 1, 0)
+             draw_text_string(20, 150, f"GHOST MODE: {game.cheat_timer:.1f}s", (0, 1, 0))
+
         # Medkit Warning
         if game.medkits_spawned_for_low_health and len(game.medkits) > 0:
              draw_text_string(WINDOW_WIDTH/2 - 80, WINDOW_HEIGHT - 100, "MEDKITS SPAWNED!", (1, 0, 0))
@@ -408,16 +423,6 @@ def display():
     look_z = game.pos[2] + math.sin(yaw_rad) * math.cos(pitch_rad)
     gluLookAt(game.pos[0], game.pos[1], game.pos[2], look_x, look_y, look_z, 0, 1, 0)
 
-    # --- LIGHTING AND FOG DISABLED FOR "NATURAL" LOOK ---
-    # glEnable(GL_LIGHTING); glEnable(GL_COLOR_MATERIAL)
-    # glEnable(GL_LIGHT0); glLightfv(GL_LIGHT0, GL_AMBIENT, [0.1, 0.1, 0.2, 1.0]); glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.2, 0.2, 0.3, 1.0])
-    # glEnable(GL_LIGHT1); glLightfv(GL_LIGHT1, GL_POSITION, [game.pos[0], game.pos[1], game.pos[2], 1.0])
-    # dir_x = look_x - game.pos[0]; dir_y = look_y - game.pos[1]; dir_z = look_z - game.pos[2]
-    # glLightfv(GL_LIGHT1, GL_SPOT_DIRECTION, [dir_x, dir_y, dir_z])
-    # glLightf(GL_LIGHT1, GL_SPOT_CUTOFF, 50.0); glLightfv(GL_LIGHT1, GL_DIFFUSE, [1.0, 1.0, 0.9, 1.0])
-    # glEnable(GL_FOG); glFogfv(GL_FOG_COLOR, [0.02, 0.05, 0.1, 1.0]); glFogf(GL_FOG_DENSITY, FOG_DENSITY)
-    # ----------------------------------------------------
-
     # Floor
     glColor3f(0.7, 0.6, 0.4); glBegin(GL_QUADS); glNormal3f(0, 1, 0)
     s = 600
@@ -441,8 +446,8 @@ def display():
 
     for s in game.sharks: draw_shark(s['pos'][0], s['pos'][1], s['pos'][2], s['yaw'], time.time() + s['anim_offset'])
         
-    # Bubbles (Simplified rendering without lighting)
-    glColor4f(0.8, 0.9, 1.0, 0.5) # Brighter, semi-transparent
+    # Bubbles
+    glColor4f(0.8, 0.9, 1.0, 0.5) 
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     for b in game.bubbles:
         glPushMatrix()
@@ -457,7 +462,15 @@ def display():
 # GLUT CALLBACKS
 # =============================================================================
 def keyboard_down(key, x, y):
-    if key == b'\x1b': sys.exit()
+    # --- ESC FIX: Ensure clean exit ---
+    if key == b'\x1b': 
+        sys.exit(0)
+        
+    # --- CHEAT MODE: Activate on 'O' ---
+    if key == b'o' or key == b'O':
+        game.cheat_mode = True
+        game.cheat_timer = 5.0
+        
     # RESTART LOGIC
     if key == b'r' or key == b'R':
         game.reset_game()
